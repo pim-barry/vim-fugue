@@ -212,6 +212,14 @@ function setupRuntimeControls(win) {
       return
     try {
       const payload = JSON.parse(trimmed)
+      if (typeof payload.url === 'string' && payload.url.trim().length) {
+        const rawUrl = payload.url.trim()
+        const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(rawUrl)
+        const finalUrl = hasScheme ? rawUrl : `http://${rawUrl}`
+        win.loadURL(finalUrl).catch((error) => {
+          console.error('runtime window control error: failed to load url:', error)
+        })
+      }
       let positionChanged = false
       let sizeChanged = false
 

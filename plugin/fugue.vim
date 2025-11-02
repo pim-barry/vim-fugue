@@ -1,8 +1,8 @@
 command! Browse echo "Hello"
+command! -bang -nargs=? Fugue call s:OpenFugueCommand(<bang>0, <q-mods>, <q-args>)
 
 augroup fugue
   autocmd!
-  autocmd BufReadCmd fugue://overlay call s:OpenFugueOverlay()
   autocmd WinResized * call s:UpdateFugueOverlay()
   autocmd VimResized * call s:UpdateFugueOverlay()
   autocmd User WinNr call s:UpdateFugueOverlay()
@@ -34,7 +34,7 @@ else
   unlet s:path_entries
 endif
 
-function! s:OpenFugueOverlay() abort
+function! s:OpenFugueOverlay(...) abort
   if !has('terminal') || !exists('*term_start')
     call s:LogDebug('[fugue] :terminal not supported in this Vim build')
     call s:LogDebug('[fugue] missing keys in payload')
@@ -51,7 +51,10 @@ function! s:OpenFugueOverlay() abort
   if !empty(payload)
     call extend(cmd, ['--width', string(payload.widthPx), '--height', string(payload.heightPx), '--x', string(payload.leftPxWin), '--y', string(payload.topPxWin)])
   endif
-  call add(cmd, s:broz_url)
+  let url = (a:0 && type(a:1) == v:t_string) ? trim(a:1) : ''
+  let target_url = empty(url) ? s:broz_url : url
+  let s:broz_url = target_url
+  call add(cmd, target_url)
   let opts = {
         \ 'curwin': 1,
         \ 'term_kill': 'term',
@@ -75,6 +78,28 @@ function! s:OpenFugueOverlay() abort
   if exists('*timer_start')
     call timer_start(120, function('s:TriggerUpdate'))
     call s:StartStateWatcher()
+  endif
+endfunction
+
+function! s:OpenFugueCommand(use_current, mods, url) abort
+  let mods = type(a:mods) == v:t_string ? trim(a:mods) : ''
+  let url = type(a:url) == v:t_string ? trim(a:url) : ''
+  if !empty(url) && s:BrozIsActive()
+    call s:SetBrozUrl(url)
+    return
+  endif
+  if a:use_current
+    if !empty(mods)
+      call s:LogDebug('[fugue] ignoring modifiers for :Fugue! (current window)')
+    endif
+  else
+    let split_cmd = empty(mods) ? 'vertical new' : mods . ' new'
+    execute split_cmd
+  endif
+  if empty(url)
+    call s:OpenFugueOverlay()
+  else
+    call s:OpenFugueOverlay(url)
   endif
 endfunction
 
@@ -170,6 +195,35 @@ function! s:SendToBroz(payload) abort
   let message = json_encode(request) . "\n"
   call s:LogDebug('[fugue] send ' . message)
   call ch_sendraw(term_channel, message)
+endfunction
+
+function! s:BrozIsActive() abort
+  if s:broz_job is v:null || type(s:broz_job) != v:t_job
+    return 0
+  endif
+  try
+    return job_status(s:broz_job) ==# 'run'
+  catch /^Vim\%((\a\+)\)\=:E\d\+/
+    return 0
+  endtry
+endfunction
+
+function! s:SetBrozUrl(url) abort
+  if empty(a:url) || !has('channel')
+    return
+  endif
+  if !s:BrozIsActive()
+    return
+  endif
+  let channel = job_getchannel(s:broz_job)
+  if channel is v:null || type(channel) != v:t_channel
+    return
+  endif
+  let s:broz_url = a:url
+  let message = json_encode({'url': a:url}) . "\n"
+  call s:LogDebug('[fugue] send url ' . a:url)
+  call ch_sendraw(channel, message)
+  call s:TriggerUpdate(0)
 endfunction
 
 function! s:StopBroz() abort
