@@ -12,6 +12,19 @@ let s:titlebar_height = v:null
 let s:macvim_cell_pad_top = 1
 let s:macvim_cell_pad_left = 2
 
+let s:script_dir = fnamemodify(expand('<sfile>:p:h'), ':p')
+let s:broz_path = substitute(fnamemodify(s:script_dir . '/../broz', ':p'), '/$', '', '')
+let s:path_entries = map(split($PATH, ':'), 'substitute(v:val, "/$", "", "")')
+if empty($PATH)
+  let $PATH = s:broz_path
+  "let @m= '[fugue] PATH empty, set to ' . s:broz_path
+elseif index(s:path_entries, s:broz_path) < 0
+  let $PATH = s:broz_path . ':' . $PATH
+  "let @m='[fugue] prepended to PATH: ' . s:broz_path
+else
+  "let @m='[fugue] broz already in PATH'
+endif
+
 function! s:OpenFugueOverlay() abort
   echom strftime('%c')
   setlocal buftype=nofile bufhidden=wipe noswapfile nobuflisted
