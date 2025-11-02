@@ -5,6 +5,13 @@ const { app, BrowserWindow, Menu } = require('electron')
 const createState = require('electron-window-state')
 const readline = require('node:readline')
 
+function parseOptionalNumber(value) {
+  if (value === undefined)
+    return undefined
+  const number = Number(value)
+  return Number.isFinite(number) ? number : undefined
+}
+
 let main = null
 
 const cli = cac('broz')
@@ -14,13 +21,17 @@ cli
   .option('top', 'set window always on top')
   .option('height <height>', 'set initial window height')
   .option('width <width>', 'set initial window width')
+  .option('x <x>', 'set initial window x position')
+  .option('y <y>', 'set initial window y position')
   .option('frame', 'set window has a frame')
   .action(async (url, options) => {
     const args = {
       url: url || 'https://github.com/antfu/broz#readme',
       top: options.top || false,
-      height: options.height ? Number(options.height) : undefined,
-      width: options.width ? Number(options.width) : undefined,
+      height: parseOptionalNumber(options.height),
+      width: parseOptionalNumber(options.width),
+      x: parseOptionalNumber(options.x),
+      y: parseOptionalNumber(options.y),
       frame: options.frame || false,
     }
 
@@ -58,11 +69,16 @@ function createMainWindow(args) {
     defaultHeight: 540,
   })
 
+  const initialX = Number.isFinite(args.x) ? Math.round(args.x) : state.x
+  const initialY = Number.isFinite(args.y) ? Math.round(args.y) : state.y
+  const initialWidth = Number.isFinite(args.width) ? Math.round(args.width) : state.width
+  const initialHeight = Number.isFinite(args.height) ? Math.round(args.height) : state.height
+
   const main = new BrowserWindow({
-    x: state.x,
-    y: state.y,
-    width: args.width ?? state.width,
-    height: args.height ?? state.height,
+    x: initialX,
+    y: initialY,
+    width: initialWidth,
+    height: initialHeight,
     show: true,
     frame: args.frame,
     titleBarStyle: 'hidden',
@@ -73,11 +89,14 @@ function createMainWindow(args) {
     alwaysOnTop: args.top,
     backgroundColor: '#00000000',
     transparent: true,
+    resizable: false,
   })
 
   main.setHasShadow(false)
   if (process.platform === 'darwin' && main.setRoundedCorners)
     main.setRoundedCorners(false)
+  if (main.setResizable)
+    main.setResizable(false)
   if (args.top)
     main.setAlwaysOnTop(true, 'screen-saver')
   if (main.setWindowButtonVisibility)
