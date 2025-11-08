@@ -233,17 +233,15 @@ function setupRuntimeControls(win) {
   if (!process.stdin || process.stdin.destroyed)
     return
 
-  win.on('focus', () => {
-    if (process.platform === 'darwin') {
-      execFile('osascript', ['-e', 'tell application "System Events" to tell application "MacVim" to activate']).on('error', (error) => {
-        console.error('runtime window control error: failed to reactivate macvim:', error)
-      })
-    }
-  })
-
   const rl = readline.createInterface({
     input: process.stdin,
     crlfDelay: Infinity,
+  })
+
+  win.on('blur', () => {
+    if (process.platform === 'darwin') {
+      callVimApi('FugueApi_ReFocusMacVim', [])
+    }
   })
 
   rl.on('line', (line) => {

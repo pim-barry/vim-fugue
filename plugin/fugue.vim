@@ -8,7 +8,7 @@ augroup fugue
   autocmd VimResized * call s:OnVimResized()
   autocmd User WinNr call s:UpdateFugueOverlay()
   autocmd FocusLost * call s:OnFocusLost()
-  autocmd FocusGained * call s:OnFocusGained()
+  autocmd FocusGained * doautocmd <nomodeline> fugue TabEnter
   autocmd TabEnter * call s:OnTabEnter()
   autocmd TabNew * call s:OnTabNew()
   autocmd TabClosed * call s:OnTabClosed()
@@ -29,7 +29,6 @@ let s:bounds_timer = -1
 let s:last_window_metrics = {}
 let s:last_cell_pixels = []
 let s:broz_hidden = 0
-let s:fugue_tabnr = -1
 let s:last_winpos = []
 
 let s:script_dir = fnamemodify(expand('<sfile>:p:h'), ':p')
@@ -53,7 +52,6 @@ function! s:OpenFugueOverlay(...) abort
   call s:StopBroz()
   let s:fugue_winid = win_getid()
   let s:broz_hidden = 0
-  let s:fugue_tabnr = tabpagenr()
   call s:GetMacVimBounds()
   call s:GetTitlebarHeight()
   let payload = s:GatherGeometry()
@@ -92,7 +90,7 @@ function! s:OpenFugueOverlay(...) abort
     call term_setapi(s:broz_bufnr, 'FugueApi_')
   endif
   if exists('*timer_start')
-    call timer_start(120, function('s:TriggerUpdate'))
+    call s:TriggerUpdate(0)
     call s:StartStateWatcher()
   endif
 endfunction
@@ -272,24 +270,11 @@ function! s:OnFocusLost() abort
   call s:HideBrozOverlay()
 endfunction
 
-function! s:OnFocusGained() abort
-  if s:broz_hidden
-    if tabpagenr() == s:GetFugueTabnr()
-      call s:ShowBrozOverlay()
-    endif
-    return
-  endif
-  if tabpagenr() == s:GetFugueTabnr()
-    call s:TriggerUpdate(0)
-  endif
-endfunction
-
 function! s:OnTabEnter() abort
   if !s:BrozIsActive()
     return
   endif
   let fugue_tab = s:GetFugueTabnr()
-  let s:fugue_tabnr = fugue_tab
   if fugue_tab == -1
     call s:HideBrozOverlay()
     return
@@ -306,16 +291,14 @@ function! s:OnTabNew() abort
 endfunction
 
 function! s:OnTabClosed() abort
-  if !exists('v:oldtabpage')
+  if s:fugue_winid == -1
     return
   endif
-  if v:oldtabpage == s:fugue_tabnr
-    call s:HideBrozOverlay()
-    let s:fugue_tabnr = -1
-    if s:fugue_winid != -1 && win_id2win(s:fugue_winid) == 0
-      let s:fugue_winid = -1
-    endif
+  if win_id2win(s:fugue_winid) != 0
+    return
   endif
+  call s:HideBrozOverlay()
+  let s:fugue_winid = -1
 endfunction
 
 function! s:GetFugueTabnr() abort
@@ -365,6 +348,18 @@ function! FugueApi_FocusOverlayWindow(bufnr, args) abort
   "call win_execute(s:fugue_winid, 'call feedkeys("\<C-w>:", "ntx")')
 endfunction
 
+function! FugueApi_ReFocusMacVim(bufnr, args) abort
+  if !has('mac')
+    return
+  endif
+  let script = [
+        \ 'tell application "System Events" to tell application "MacVim" to activate',
+        \ 'delay 0.2',
+        \ 'do shell script "cliclick c:."'
+        \ ]
+  call system('osascript', join(script, "\n"))
+endfunction
+
 function! s:StopBroz() abort
   call s:StopStateWatcher()
   if type(s:broz_job) == v:t_job
@@ -383,7 +378,6 @@ function! s:StopBroz() abort
   let s:last_window_metrics = {}
   let s:last_cell_pixels = []
   let s:broz_hidden = 0
-  let s:fugue_tabnr = -1
   let s:last_winpos = []
   if s:bounds_timer != -1
     call timer_stop(s:bounds_timer)
@@ -408,10 +402,7 @@ function! s:TriggerUpdate(timer) abort
   endif
   let payload = s:GatherGeometry()
   if empty(payload)
-    call s:LogDebug('[fugue] payload empty, retry later')
-    if exists('*timer_start')
-      call timer_start(120, function('s:TriggerUpdate'))
-    endif
+    call s:LogDebug('[fugue] payload empty, skip update')
     return
   endif
   if s:broz_hidden
