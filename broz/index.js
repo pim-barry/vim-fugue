@@ -4,6 +4,19 @@ const { cac } = require('cac')
 const { app, BrowserWindow, Menu } = require('electron')
 const createState = require('electron-window-state')
 const readline = require('node:readline')
+const { execFile } = require('node:child_process')
+
+function callVimApi(functionName, args = []) {
+  try {
+    if (!process.stdout || process.stdout.destroyed)
+      return
+    const payload = JSON.stringify(['call', functionName, args])
+    process.stdout.write(`\u001b]51;${payload}\u0007`)
+  }
+  catch (error) {
+    console.error('runtime window control error: failed to notify vim api:', error)
+  }
+}
 
 function parseOptionalNumber(value) {
   if (value === undefined)
@@ -79,7 +92,7 @@ function createMainWindow(args) {
     y: initialY,
     width: initialWidth,
     height: initialHeight,
-    show: true,
+    show: false,
     frame: args.frame,
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: -100, y: -100 },
@@ -118,6 +131,16 @@ function createMainWindow(args) {
   main.on('move', debouncedSaveWindowState)
 
   configureWindow(main, args)
+  if (typeof main.showInactive === 'function') {
+    main.once('ready-to-show', () => {
+      main.showInactive()
+    })
+  }
+  else {
+    main.once('ready-to-show', () => {
+      main.show()
+    })
+  }
 
   return main
 }
@@ -167,6 +190,15 @@ document.head.appendChild(rootStyle)
         win.webContents.goBack()
         event.preventDefault()
       }
+      else if (input.key.toLowerCase() === 'w') {
+        callVimApi('FugueApi_FocusOverlayWindow', [])
+        if (process.platform === 'darwin') {
+          execFile('osascript', ['-e', `tell application "System Events" to tell application "MacVim" to activate`]).on('error', (error) => {
+            console.error('runtime window control error: failed to activate macvim:', error)
+          })
+        }
+        event.preventDefault()
+      }
       else if (input.key === '-') {
         win.webContents.emit('zoom-changed', event, 'out')
         event.preventDefault()
@@ -210,8 +242,31 @@ function setupRuntimeControls(win) {
     const trimmed = line.trim()
     if (!trimmed)
       return
+    if (!(trimmed.startsWith('{') || trimmed.startsWith('[')))
+      return
     try {
       const payload = JSON.parse(trimmed)
+      const action = typeof payload?.action === 'string' ? payload.action.toLowerCase() : null
+      if (action === 'hide') {
+        if (!win.isDestroyed() && win.isVisible() && !win.isFocused())
+          win.hide()
+        return
+      }
+      if (action === 'show') {
+        if (win.isDestroyed())
+          return
+        if (win.isMinimized())
+          win.restore()
+        if (!win.isVisible()) {
+          if (typeof win.showInactive === 'function')
+            win.showInactive()
+          else
+            win.show()
+        }
+        else if (typeof win.showInactive === 'function') {
+          win.showInactive()
+        }
+      }
       if (typeof payload.url === 'string' && payload.url.trim().length) {
         const rawUrl = payload.url.trim()
         const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(rawUrl)

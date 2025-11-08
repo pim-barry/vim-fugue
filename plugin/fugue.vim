@@ -1,4 +1,4 @@
-command! Browse echo "Hello"
+command! Browse echo "Hello2"
 command! -bang -nargs=? Fugue call s:OpenFugueCommand(<bang>0, <q-mods>, <q-args>)
 
 augroup fugue
@@ -6,6 +6,10 @@ augroup fugue
   autocmd WinResized * call s:UpdateFugueOverlay()
   autocmd VimResized * call s:UpdateFugueOverlay()
   autocmd User WinNr call s:UpdateFugueOverlay()
+  autocmd FocusLost * call s:OnFocusLost()
+  autocmd FocusGained * call s:OnFocusGained()
+  autocmd TabEnter * call s:OnTabEnter()
+  autocmd TabClosed * call s:OnTabClosed()
   autocmd VimLeavePre * call s:StopBroz()
 augroup END
 
@@ -21,6 +25,8 @@ let s:macvim_bounds = v:null
 let s:state_timer = -1
 let s:last_window_metrics = {}
 let s:last_cell_pixels = []
+let s:broz_hidden = 0
+let s:fugue_tabnr = -1
 
 let s:script_dir = fnamemodify(expand('<sfile>:p:h'), ':p')
 let s:broz_path = substitute(fnamemodify(s:script_dir . '/../broz', ':p'), '/$', '', '')
@@ -42,6 +48,8 @@ function! s:OpenFugueOverlay(...) abort
   endif
   call s:StopBroz()
   let s:fugue_winid = win_getid()
+  let s:broz_hidden = 0
+  let s:fugue_tabnr = tabpagenr()
   call s:GetMacVimBounds()
   call s:GetTitlebarHeight()
   let payload = s:GatherGeometry()
@@ -67,6 +75,7 @@ function! s:OpenFugueOverlay(...) abort
     return
   endif
   let s:broz_bufnr = term_bufnr
+  let g:broz_bufnr = term_bufnr
   let term_job = term_getjob(term_bufnr)
   if term_job is v:null || type(term_job) != v:t_job
     call s:LogDebug('[fugue] failed to obtain broz job handle')
@@ -75,6 +84,9 @@ function! s:OpenFugueOverlay(...) abort
   endif
   let s:broz_job = term_job
   call s:LogDebug('[fugue] broz job active buffer=' . s:broz_bufnr)
+  if exists('*term_setapi')
+    call term_setapi(s:broz_bufnr, 'FugueApi_')
+  endif
   if exists('*timer_start')
     call timer_start(120, function('s:TriggerUpdate'))
     call s:StartStateWatcher()
@@ -182,16 +194,20 @@ function! s:SendToBroz(payload) abort
     call s:LogDebug('[fugue] failed to obtain terminal channel')
     return
   endif
-  if !has_key(a:payload, 'widthPx') || !has_key(a:payload, 'heightPx')
-        \ || !has_key(a:payload, 'topPxWin') || !has_key(a:payload, 'leftPxWin')
+  let request = {}
+  if has_key(a:payload, 'action')
+    let request.action = a:payload.action
+  endif
+  if has_key(a:payload, 'widthPx') && has_key(a:payload, 'heightPx')
+        \ && has_key(a:payload, 'topPxWin') && has_key(a:payload, 'leftPxWin')
+    let request.width = s:ToInt(a:payload.widthPx)
+    let request.height = s:ToInt(a:payload.heightPx)
+    let request.x = s:ToInt(a:payload.leftPxWin)
+    let request.y = s:ToInt(a:payload.topPxWin)
+  endif
+  if !has_key(request, 'action') && !has_key(request, 'width')
     return
   endif
-  let request = {
-        \ 'width': s:ToInt(a:payload.widthPx),
-        \ 'height': s:ToInt(a:payload.heightPx),
-        \ 'x': s:ToInt(a:payload.leftPxWin),
-        \ 'y': s:ToInt(a:payload.topPxWin),
-        \ }
   let message = json_encode(request) . "\n"
   call s:LogDebug('[fugue] send ' . message)
   call ch_sendraw(term_channel, message)
@@ -226,6 +242,97 @@ function! s:SetBrozUrl(url) abort
   call s:TriggerUpdate(0)
 endfunction
 
+function! s:HideBrozOverlay() abort
+  if s:broz_hidden || !s:BrozIsActive()
+    return
+  endif
+  call s:SendToBroz({'action': 'hide'})
+  let s:broz_hidden = 1
+endfunction
+
+function! s:ShowBrozOverlay() abort
+  if !s:BrozIsActive()
+    return
+  endif
+  let payload = empty(s:last_payload) ? s:GatherGeometry() : copy(s:last_payload)
+  if empty(payload)
+    return
+  endif
+  let s:last_payload = copy(payload)
+  let payload.action = 'show'
+  call s:SendToBroz(payload)
+  let s:broz_hidden = 0
+endfunction
+
+function! s:OnFocusLost() abort
+  call s:HideBrozOverlay()
+endfunction
+
+function! s:OnFocusGained() abort
+  if s:broz_hidden
+    call s:ShowBrozOverlay()
+  else
+    call s:TriggerUpdate(0)
+  endif
+endfunction
+
+function! s:GetFugueTabnr() abort
+  if s:fugue_winid == -1
+    return -1
+  endif
+  if exists('*win_id2tabwin')
+    let tabinfo = win_id2tabwin(s:fugue_winid)
+    if type(tabinfo) == v:t_list && len(tabinfo) >= 1 && tabinfo[0] > 0
+      return tabinfo[0]
+    endif
+  endif
+  for tabdata in gettabinfo()
+    if has_key(tabdata, 'windows') && index(tabdata.windows, s:fugue_winid) >= 0
+      return tabdata.tabnr
+    endif
+  endfor
+  return -1
+endfunction
+
+function! s:OnTabEnter() abort
+  if !s:BrozIsActive()
+    return
+  endif
+  let fugue_tab = s:GetFugueTabnr()
+  let s:fugue_tabnr = fugue_tab
+  if fugue_tab == -1
+    call s:HideBrozOverlay()
+    return
+  endif
+  if tabpagenr() == fugue_tab
+    call s:ShowBrozOverlay()
+  else
+    call s:HideBrozOverlay()
+  endif
+endfunction
+
+function! s:OnTabClosed() abort
+  if !exists('v:oldtabpage')
+    return
+  endif
+  if v:oldtabpage == s:fugue_tabnr
+    call s:HideBrozOverlay()
+    let s:fugue_tabnr = -1
+    if s:fugue_winid != -1 && win_id2win(s:fugue_winid) == 0
+      let s:fugue_winid = -1
+    endif
+  endif
+endfunction
+
+function! FugueApi_FocusOverlayWindow(bufnr, args) abort
+  if s:fugue_winid == -1 || !win_id2win(s:fugue_winid)
+    return
+  endif
+  let @w=s:fugue_winid
+  let @v=bufnr()
+  "call win_execute(s:fugue_winid, 'call feedkeys("\<C-w>:", "ntx")')
+endfunction
+
 function! s:StopBroz() abort
   call s:StopStateWatcher()
   if type(s:broz_job) == v:t_job
@@ -243,6 +350,8 @@ function! s:StopBroz() abort
   let s:last_payload = {}
   let s:last_window_metrics = {}
   let s:last_cell_pixels = []
+  let s:broz_hidden = 0
+  let s:fugue_tabnr = -1
 endfunction
 
 function! s:TriggerUpdate(timer) abort
@@ -266,6 +375,10 @@ function! s:TriggerUpdate(timer) abort
     if exists('*timer_start')
       call timer_start(120, function('s:TriggerUpdate'))
     endif
+    return
+  endif
+  if s:broz_hidden
+    let s:last_payload = copy(payload)
     return
   endif
   if !empty(s:last_payload) && s:PayloadEquals(s:last_payload, payload)
@@ -476,3 +589,18 @@ endfunction
 if has('mac') && !empty(v:servername)
   call s:GetMacVimBounds()
 endif
+function! FugueApi_SendKeys(bufnr, args) abort
+  if s:fugue_winid == -1 || !win_id2win(s:fugue_winid)
+    return
+  endif
+  if type(a:args) != v:t_list || empty(a:args)
+    return
+  endif
+  call win_gotoid(s:fugue_winid)
+  for key in a:args
+    if type(key) != v:t_string || empty(key)
+      continue
+    endif
+    call feedkeys(key, 'n')
+  endfor
+endfunction
