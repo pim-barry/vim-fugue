@@ -5,10 +5,12 @@ augroup fugue
   autocmd!
   autocmd WinResized * call s:UpdateFugueOverlay()
   autocmd VimResized * call s:UpdateFugueOverlay()
+  autocmd VimResized * call s:OnVimResized()
   autocmd User WinNr call s:UpdateFugueOverlay()
   autocmd FocusLost * call s:OnFocusLost()
   autocmd FocusGained * call s:OnFocusGained()
   autocmd TabEnter * call s:OnTabEnter()
+  autocmd TabNew * call s:OnTabNew()
   autocmd TabClosed * call s:OnTabClosed()
   autocmd VimLeavePre * call s:StopBroz()
 augroup END
@@ -23,10 +25,12 @@ let s:last_payload = {}
 let s:broz_url = 'https://pornhub.com'
 let s:macvim_bounds = v:null
 let s:state_timer = -1
+let s:bounds_timer = -1
 let s:last_window_metrics = {}
 let s:last_cell_pixels = []
 let s:broz_hidden = 0
 let s:fugue_tabnr = -1
+let s:last_winpos = []
 
 let s:script_dir = fnamemodify(expand('<sfile>:p:h'), ':p')
 let s:broz_path = substitute(fnamemodify(s:script_dir . '/../broz', ':p'), '/$', '', '')
@@ -270,9 +274,47 @@ endfunction
 
 function! s:OnFocusGained() abort
   if s:broz_hidden
+    if tabpagenr() == s:GetFugueTabnr()
+      call s:ShowBrozOverlay()
+    endif
+    return
+  endif
+  if tabpagenr() == s:GetFugueTabnr()
+    call s:TriggerUpdate(0)
+  endif
+endfunction
+
+function! s:OnTabEnter() abort
+  if !s:BrozIsActive()
+    return
+  endif
+  let fugue_tab = s:GetFugueTabnr()
+  let s:fugue_tabnr = fugue_tab
+  if fugue_tab == -1
+    call s:HideBrozOverlay()
+    return
+  endif
+  if tabpagenr() == fugue_tab
     call s:ShowBrozOverlay()
   else
-    call s:TriggerUpdate(0)
+    call s:HideBrozOverlay()
+  endif
+endfunction
+
+function! s:OnTabNew() abort
+  call s:HideBrozOverlay()
+endfunction
+
+function! s:OnTabClosed() abort
+  if !exists('v:oldtabpage')
+    return
+  endif
+  if v:oldtabpage == s:fugue_tabnr
+    call s:HideBrozOverlay()
+    let s:fugue_tabnr = -1
+    if s:fugue_winid != -1 && win_id2win(s:fugue_winid) == 0
+      let s:fugue_winid = -1
+    endif
   endif
 endfunction
 
@@ -294,34 +336,24 @@ function! s:GetFugueTabnr() abort
   return -1
 endfunction
 
-function! s:OnTabEnter() abort
-  if !s:BrozIsActive()
+function! s:OnVimResized() abort
+  if !exists('*timer_start')
+    call s:RefreshMacVimBounds()
     return
   endif
-  let fugue_tab = s:GetFugueTabnr()
-  let s:fugue_tabnr = fugue_tab
-  if fugue_tab == -1
-    call s:HideBrozOverlay()
-    return
+  if s:bounds_timer != -1
+    call timer_stop(s:bounds_timer)
+    let s:bounds_timer = -1
   endif
-  if tabpagenr() == fugue_tab
-    call s:ShowBrozOverlay()
-  else
-    call s:HideBrozOverlay()
-  endif
+  let s:bounds_timer = timer_start(1000, {-> s:RefreshMacVimBounds()})
 endfunction
 
-function! s:OnTabClosed() abort
-  if !exists('v:oldtabpage')
-    return
-  endif
-  if v:oldtabpage == s:fugue_tabnr
-    call s:HideBrozOverlay()
-    let s:fugue_tabnr = -1
-    if s:fugue_winid != -1 && win_id2win(s:fugue_winid) == 0
-      let s:fugue_winid = -1
-    endif
-  endif
+function! s:RefreshMacVimBounds() abort
+  let s:bounds_timer = -1
+  let s:macvim_bounds = {}
+  let s:last_winpos = []
+  call s:GetMacVimBounds()
+  call s:TriggerUpdate(0)
 endfunction
 
 function! FugueApi_FocusOverlayWindow(bufnr, args) abort
@@ -352,6 +384,11 @@ function! s:StopBroz() abort
   let s:last_cell_pixels = []
   let s:broz_hidden = 0
   let s:fugue_tabnr = -1
+  let s:last_winpos = []
+  if s:bounds_timer != -1
+    call timer_stop(s:bounds_timer)
+    let s:bounds_timer = -1
+  endif
 endfunction
 
 function! s:TriggerUpdate(timer) abort
@@ -531,6 +568,7 @@ function! s:StartStateWatcher() abort
   endif
   let s:last_window_metrics = {}
   let s:last_cell_pixels = getcellpixels()
+  let s:last_winpos = []
   let s:state_timer = timer_start(200, function('s:PollWindowState'), {'repeat': -1})
 endfunction
 
@@ -571,9 +609,29 @@ function! s:PollWindowState(timer) abort
       let needs_update = 1
     endif
   endif
+  if exists('*getwinpos')
+    let pos = getwinpos()
+    if type(pos) == v:t_list && len(pos) == 2
+      if empty(s:last_winpos) || s:last_winpos[0] !=# pos[0] || s:last_winpos[1] !=# pos[1]
+        let s:last_winpos = pos
+        call s:ScheduleBoundsRefresh()
+      endif
+    endif
+  endif
   if needs_update
     call s:TriggerUpdate(0)
   endif
+endfunction
+
+function! s:ScheduleBoundsRefresh() abort
+  if !exists('*timer_start')
+    call s:RefreshMacVimBounds()
+    return
+  endif
+  if s:bounds_timer != -1
+    call timer_stop(s:bounds_timer)
+  endif
+  let s:bounds_timer = timer_start(1000, {-> s:RefreshMacVimBounds()})
 endfunction
 
 function! s:PayloadEquals(left, right) abort
