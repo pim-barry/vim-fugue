@@ -8,7 +8,7 @@ augroup fugue
   autocmd VimResized * call s:OnVimResized()
   autocmd User WinNr call s:UpdateFugueOverlay()
   autocmd FocusLost * call s:OnFocusLost()
-  autocmd FocusGained * doautocmd <nomodeline> fugue TabEnter
+  autocmd FocusGained * call s:OnFocusGained()
   autocmd TabEnter * call s:OnTabEnter()
   autocmd TabNew * call s:OnTabNew()
   autocmd TabClosed * call s:OnTabClosed()
@@ -26,10 +26,12 @@ let s:broz_url = 'https://pornhub.com'
 let s:macvim_bounds = v:null
 let s:state_timer = -1
 let s:bounds_timer = -1
+let s:focus_timer = -1
 let s:last_window_metrics = {}
 let s:last_cell_pixels = []
 let s:broz_hidden = 0
 let s:last_winpos = []
+let s:log_path = expand('~/Desktop/log.txt')
 
 let s:script_dir = fnamemodify(expand('<sfile>:p:h'), ':p')
 let s:broz_path = substitute(fnamemodify(s:script_dir . '/../broz', ':p'), '/$', '', '')
@@ -245,7 +247,8 @@ function! s:SetBrozUrl(url) abort
 endfunction
 
 function! s:HideBrozOverlay() abort
-  if s:broz_hidden || !s:BrozIsActive()
+  if !s:BrozIsActive()
+    call s:LogDebug('⚠️ hide skipped: broz inactive')
     return
   endif
   call s:SendToBroz({'action': 'hide'})
@@ -254,10 +257,12 @@ endfunction
 
 function! s:ShowBrozOverlay() abort
   if !s:BrozIsActive()
+    call s:LogDebug('⚠️ show skipped: broz inactive')
     return
   endif
   let payload = empty(s:last_payload) ? s:GatherGeometry() : copy(s:last_payload)
   if empty(payload)
+    call s:LogDebug('⚠️ show skipped: payload empty')
     return
   endif
   let s:last_payload = copy(payload)
@@ -266,14 +271,57 @@ function! s:ShowBrozOverlay() abort
   let s:broz_hidden = 0
 endfunction
 
+function! s:ScheduleFocusCheck() abort
+  if !exists('*timer_start')
+    call s:HandleFocusCheck()
+    return
+  endif
+  if s:focus_timer != -1
+    call timer_stop(s:focus_timer)
+  endif
+  let s:focus_timer = timer_start(100, {-> s:HandleFocusCheck()})
+endfunction
+
+function! s:HandleFocusCheck() abort
+  let s:focus_timer = -1
+  if !s:BrozIsActive()
+    call s:LogDebug('⚠️ focus check skipped: broz inactive')
+    return
+  endif
+  let fugue_tab = s:GetFugueTabnr()
+  if fugue_tab == -1
+    call s:LogDebug('⚠️ focus check: fugue tab missing')
+    call s:HideBrozOverlay()
+    return
+  endif
+  if tabpagenr() == fugue_tab
+    call s:LogDebug('focus check: showing overlay for tab ' . fugue_tab)
+    call s:ShowBrozOverlay()
+  else
+    call s:LogDebug('focus check: current tab ' . tabpagenr() . ' != fugue tab ' . fugue_tab)
+  endif
+endfunction
+
 function! s:OnFocusLost() abort
+  call s:LogDebug('FocusLost event')
+  if s:focus_timer != -1
+    call timer_stop(s:focus_timer)
+    let s:focus_timer = -1
+  endif
   call s:HideBrozOverlay()
+endfunction
+
+function! s:OnFocusGained() abort
+  call s:LogDebug('FocusGained event')
+  call s:ScheduleFocusCheck()
+  execute 'doautocmd <nomodeline> fugue TabEnter'
 endfunction
 
 function! s:OnTabEnter() abort
   if !s:BrozIsActive()
     return
   endif
+  call s:LogDebug('TabEnter event tab=' . tabpagenr())
   let fugue_tab = s:GetFugueTabnr()
   if fugue_tab == -1
     call s:HideBrozOverlay()
@@ -287,6 +335,7 @@ function! s:OnTabEnter() abort
 endfunction
 
 function! s:OnTabNew() abort
+  call s:LogDebug('TabNew event')
   call s:HideBrozOverlay()
 endfunction
 
@@ -294,6 +343,7 @@ function! s:OnTabClosed() abort
   if s:fugue_winid == -1
     return
   endif
+  call s:LogDebug('TabClosed event')
   if win_id2win(s:fugue_winid) != 0
     return
   endif
@@ -379,6 +429,10 @@ function! s:StopBroz() abort
   let s:last_cell_pixels = []
   let s:broz_hidden = 0
   let s:last_winpos = []
+  if s:focus_timer != -1
+    call timer_stop(s:focus_timer)
+    let s:focus_timer = -1
+  endif
   if s:bounds_timer != -1
     call timer_stop(s:bounds_timer)
     let s:bounds_timer = -1
@@ -425,9 +479,11 @@ endfunction
 
 
 function! s:LogDebug(msg) abort
-  let lines = getreg('d', 1, 1)
-  call add(lines, a:msg)
-  call setreg('d', lines)
+  if empty(s:log_path)
+    return
+  endif
+  let entry = printf('%s %s', strftime('%Y-%m-%d %H:%M:%S'), a:msg)
+  call writefile([entry], s:log_path, 'a')
 endfunction
 function! s:GetMacVimBounds() abort
   if type(s:macvim_bounds) == v:t_dict && !empty(s:macvim_bounds)

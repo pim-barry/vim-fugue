@@ -254,24 +254,11 @@ function setupRuntimeControls(win) {
       const payload = JSON.parse(trimmed)
       const action = typeof payload?.action === 'string' ? payload.action.toLowerCase() : null
       if (action === 'hide') {
-        if (!win.isDestroyed() && win.isVisible() && !win.isFocused())
-          win.hide()
-        return
+        //if (!win.isDestroyed() && win.isVisible() && !win.isFocused())
+        win.hide()
       }
       if (action === 'show') {
-        if (win.isDestroyed())
-          return
-        if (win.isMinimized())
-          win.restore()
-        if (!win.isVisible()) {
-          if (typeof win.showInactive === 'function')
-            win.showInactive()
-          else
-            win.show()
-        }
-        else if (typeof win.showInactive === 'function') {
-          win.showInactive()
-        }
+        win.showInactive()
       }
       if (typeof payload.url === 'string' && payload.url.trim().length) {
         const rawUrl = payload.url.trim()
