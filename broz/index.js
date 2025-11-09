@@ -114,6 +114,8 @@ function createMainWindow(args) {
     main.setAlwaysOnTop(true, 'screen-saver')
   if (main.setWindowButtonVisibility)
     main.setWindowButtonVisibility(false)
+  if (main.setVisibleOnAllWorkspaces)
+    main.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
 
   main.on('resize', () => {
     const [width, height] = main.getSize()
