@@ -115,7 +115,7 @@ function createMainWindow(args) {
   if (main.setWindowButtonVisibility)
     main.setWindowButtonVisibility(false)
   if (main.setVisibleOnAllWorkspaces)
-    main.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+    main.setVisibleOnAllWorkspaces(false, { visibleOnFullScreen: true })
 
   main.on('resize', () => {
     const [width, height] = main.getSize()
@@ -255,12 +255,22 @@ function setupRuntimeControls(win) {
     try {
       const payload = JSON.parse(trimmed)
       const action = typeof payload?.action === 'string' ? payload.action.toLowerCase() : null
+      if (action === 'blur') {
+        // drop BrowserWindow focus without tearing it down entirely
+        if (!win.isDestroyed()) {
+          win.blur()
+          if (typeof win.blurWebView === 'function')
+            win.blurWebView()
+        }
+      }
       if (action === 'hide') {
-        //if (!win.isDestroyed() && win.isVisible() && !win.isFocused())
         win.hide()
       }
       if (action === 'show') {
-        win.showInactive()
+        if (typeof win.showInactive === 'function')
+          win.showInactive()
+        else
+          win.show()
       }
       if (typeof payload.url === 'string' && payload.url.trim().length) {
         const rawUrl = payload.url.trim()

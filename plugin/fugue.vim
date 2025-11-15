@@ -1,4 +1,4 @@
-command! Browse echo "Hello2"
+command! Browse echo "Hello4"
 command! -bang -nargs=? Fugue call s:OpenFugueCommand(<bang>0, <q-mods>, <q-args>)
 
 augroup fugue
@@ -7,8 +7,8 @@ augroup fugue
   autocmd VimResized * call s:UpdateFugueOverlay()
   autocmd VimResized * call s:OnVimResized()
   autocmd User WinNr call s:UpdateFugueOverlay()
-  autocmd FocusLost * call s:OnFocusLost()
-  autocmd FocusGained * call s:OnFocusGained()
+  "autocmd FocusLost * call s:OnFocusLost()
+  "autocmd FocusGained * call  s:OnTabEnter()
   autocmd TabEnter * call s:OnTabEnter()
   autocmd TabNew * call s:OnTabNew()
   autocmd TabClosed * call s:OnTabClosed()
@@ -19,6 +19,8 @@ let s:fugue_winid = -1
 let s:titlebar_height = v:null
 let s:macvim_cell_pad_top = 1
 let s:macvim_cell_pad_left = 2
+let s:fullscreen_gutter_top = 39
+let s:fullscreen_gutter_left = 2
 let s:broz_job = v:null
 let s:broz_bufnr = -1
 let s:last_payload = {}
@@ -156,18 +158,12 @@ function! s:GatherGeometry() abort
         \ }
   let payload.widthPx = s:ToInt(w.width * cell_w)
   let payload.heightPx = s:ToInt(w.height * cell_h)
-  let macvim = s:GetMacVimBounds()
-  let titlebar = s:GetTitlebarHeight()
-  if !empty(macvim)
-    let payload.mvimTopPx = s:ToInt(macvim.y + titlebar + s:macvim_cell_pad_top)
-    let payload.mvimLeftPx = s:ToInt(macvim.x + s:macvim_cell_pad_left)
-    let payload.mvimWidthPx = s:ToInt(macvim.width)
-    let payload.mvimHeightPx = s:ToInt(macvim.height)
-    let payload.titlebarHeightPx = s:ToInt(titlebar)
-    let payload.cellPadPx = {'top': s:macvim_cell_pad_top, 'left': s:macvim_cell_pad_left}
-    let payload.topPxWin = s:ToInt(macvim.y + titlebar + s:macvim_cell_pad_top + (w.winrow - 1) * cell_h)
-    let payload.leftPxWin = s:ToInt(macvim.x + s:macvim_cell_pad_left + (w.wincol - 1) * cell_w)
-  endif
+  let pad_top = s:fullscreen_gutter_top
+  let pad_left = s:fullscreen_gutter_left
+  let payload.titlebarHeightPx = 0
+  let payload.cellPadPx = {'top': pad_top, 'left': pad_left}
+  let payload.topPxWin = s:ToInt(pad_top + (w.winrow - 1) * cell_h)
+  let payload.leftPxWin = s:ToInt(pad_left + (w.wincol - 1) * cell_w)
   return payload
 endfunction
 
@@ -251,13 +247,29 @@ function! s:HideBrozOverlay() abort
     call s:LogDebug('⚠️ hide skipped: broz inactive')
     return
   endif
+  if s:broz_hidden
+    call s:LogDebug('⚠️ hide skipped: broz already hidden')
+    return
+  endif
   call s:SendToBroz({'action': 'hide'})
   let s:broz_hidden = 1
+endfunction
+
+function! s:BlurBrozOverlay() abort
+  if !s:BrozIsActive()
+    call s:LogDebug('⚠️ blur skipped: broz inactive')
+    return
+  endif
+  call s:SendToBroz({'action': 'blur'})
 endfunction
 
 function! s:ShowBrozOverlay() abort
   if !s:BrozIsActive()
     call s:LogDebug('⚠️ show skipped: broz inactive')
+    return
+  endif
+  if !s:broz_hidden
+    call s:LogDebug('⚠️ show skipped: broz already visible')
     return
   endif
   let payload = empty(s:last_payload) ? s:GatherGeometry() : copy(s:last_payload)
@@ -308,7 +320,10 @@ function! s:OnFocusLost() abort
     call timer_stop(s:focus_timer)
     let s:focus_timer = -1
   endif
-  call s:HideBrozOverlay()
+  call s:BlurBrozOverlay()
+  if get(g:, 'fugue_hide_on_focus_lost', 0)
+    call s:HideBrozOverlay()
+  endif
 endfunction
 
 function! s:OnFocusGained() abort
