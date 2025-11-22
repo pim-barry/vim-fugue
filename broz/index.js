@@ -103,6 +103,7 @@ function createMainWindow(args) {
     backgroundColor: '#00000000',
     transparent: true,
     resizable: false,
+    focusable: false,
   })
 
   main.setHasShadow(false)
@@ -116,6 +117,8 @@ function createMainWindow(args) {
     main.setWindowButtonVisibility(false)
   if (main.setVisibleOnAllWorkspaces)
     main.setVisibleOnAllWorkspaces(false, { visibleOnFullScreen: true })
+  if (typeof main.setFocusable === 'function')
+    main.setFocusable(false)
 
   main.on('resize', () => {
     const [width, height] = main.getSize()
@@ -133,16 +136,14 @@ function createMainWindow(args) {
   main.on('move', debouncedSaveWindowState)
 
   configureWindow(main, args)
-  if (typeof main.showInactive === 'function') {
-    main.once('ready-to-show', () => {
-      main.showInactive()
-    })
-  }
-  else {
-    main.once('ready-to-show', () => {
-      main.show()
-    })
-  }
+  main.once('ready-to-show', () => {
+    showWindowUnfocused(main)
+    main.show()
+    setTimeout(() => {
+      showWindowUnfocused(main)
+    }, 200)
+  })
+  enforceUnfocusedState(main)
 
   return main
 }
@@ -183,6 +184,8 @@ document.head.appendChild(rootStyle)
   })
 
   win.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'mouseDown')
+      callVimApi('FugueApi_ReFocusMacVim', ['auto-down'])
     if (input.control || input.meta) {
       if (input.key === ']') {
         win.webContents.goForward()
@@ -192,13 +195,8 @@ document.head.appendChild(rootStyle)
         win.webContents.goBack()
         event.preventDefault()
       }
-      else if (input.key.toLowerCase() === 'w') {
-        callVimApi('FugueApi_FocusOverlayWindow', [])
-        if (process.platform === 'darwin') {
-          execFile('osascript', ['-e', `tell application "System Events" to tell application "MacVim" to activate`]).on('error', (error) => {
-            console.error('runtime window control error: failed to activate macvim:', error)
-          })
-        }
+      else if (input.key.toLowerCase() === 'f') {
+        callVimApi('FugueApi_ReFocusMacVim', ['keyboard'])
         event.preventDefault()
       }
       else if (input.key === '-') {
@@ -212,8 +210,18 @@ document.head.appendChild(rootStyle)
     }
   })
 
+  win.webContents.on('input-event', (event, input) => {
+    if (input.type === 'mouseUp')
+      callVimApi('FugueApi_ReFocusMacVim', ['auto-up'])
+  })
+
+
   win.webContents.on('did-create-window', (win) => {
     configureWindow(win, args)
+    enforceUnfocusedState(win)
+    if (typeof win.setFocusable === 'function')
+      win.setFocusable(false)
+    callVimApi('FugueApi_ReFocusMacVim', [])
   })
 
   win.webContents.on('zoom-changed', (event, zoomDirection) => {
@@ -240,12 +248,6 @@ function setupRuntimeControls(win) {
     crlfDelay: Infinity,
   })
 
-  win.on('blur', () => {
-    if (process.platform === 'darwin') {
-      callVimApi('FugueApi_ReFocusMacVim', [])
-    }
-  })
-
   rl.on('line', (line) => {
     const trimmed = line.trim()
     if (!trimmed)
@@ -266,11 +268,8 @@ function setupRuntimeControls(win) {
       if (action === 'hide') {
         win.hide()
       }
-      if (action === 'show') {
-        if (typeof win.showInactive === 'function')
-          win.showInactive()
-        else
-          win.show()
+      if (action === 'show' || action === 'show_inactive') {
+        showWindowUnfocused(win)
       }
       if (typeof payload.url === 'string' && payload.url.trim().length) {
         const rawUrl = payload.url.trim()
@@ -311,6 +310,34 @@ function setupRuntimeControls(win) {
     }
   })
 }
+
+/**
+ * Keep the browser window blurred even when user interaction tries to focus it.
+ * @param {BrowserWindow} win
+ */
+function enforceUnfocusedState(win) {
+  win.on('focus', () => {
+    showWindowUnfocused(win)
+  })
+}
+
+/**
+ * Ensure the browser window becomes visible without stealing focus from Vim.
+ * @param {BrowserWindow} win
+ */
+function showWindowUnfocused(win) {
+  if (typeof win.showInactive === 'function') {
+    win.showInactive()
+  }
+  else {
+    win.show()
+    if (typeof win.blur === 'function')
+      win.blur()
+    if (typeof win.blurWebView === 'function')
+      win.blurWebView()
+  }
+}
+
 
 function debounce(fn, delay) {
   let timeoutID = null

@@ -34,6 +34,7 @@ let s:last_cell_pixels = []
 let s:broz_hidden = 0
 let s:last_winpos = []
 let s:log_path = expand('~/Desktop/log.txt')
+let s:vim_window_id = ''
 
 let s:script_dir = fnamemodify(expand('<sfile>:p:h'), ':p')
 let s:broz_path = substitute(fnamemodify(s:script_dir . '/../broz', ':p'), '/$', '', '')
@@ -62,6 +63,7 @@ function! s:OpenFugueOverlay(...) abort
   call s:LogDebug('[fugue] gather payload ' . json_encode(payload))
   let s:last_payload = payload
   let cmd = ['broz.js', '--top']
+  call s:GetYabaiWindowId()
   if !empty(payload)
     call extend(cmd, ['--width', string(payload.widthPx), '--height', string(payload.heightPx), '--x', string(payload.leftPxWin), '--y', string(payload.topPxWin)])
   endif
@@ -278,7 +280,7 @@ function! s:ShowBrozOverlay() abort
     return
   endif
   let s:last_payload = copy(payload)
-  let payload.action = 'show'
+  let payload.action = 'show_inactive'
   call s:SendToBroz(payload)
   let s:broz_hidden = 0
 endfunction
@@ -414,15 +416,12 @@ function! FugueApi_FocusOverlayWindow(bufnr, args) abort
 endfunction
 
 function! FugueApi_ReFocusMacVim(bufnr, args) abort
-  if !has('mac')
-    return
+  if !empty(a:args)
+    call s:LogDebug('[fugue] manual refocus request via ' . string(a:args))
+  else
+    call s:LogDebug('[fugue] automatic refocus request')
   endif
-  let script = [
-        \ 'tell application "System Events" to tell application "MacVim" to activate',
-        \ 'delay 0.2',
-        \ 'do shell script "cliclick c:."'
-        \ ]
-  call system('osascript', join(script, "\n"))
+  call s:RefocusMacVim()
 endfunction
 
 function! s:StopBroz() abort
@@ -444,6 +443,7 @@ function! s:StopBroz() abort
   let s:last_cell_pixels = []
   let s:broz_hidden = 0
   let s:last_winpos = []
+  let s:vim_window_id = ''
   if s:focus_timer != -1
     call timer_stop(s:focus_timer)
     let s:focus_timer = -1
@@ -452,6 +452,88 @@ function! s:StopBroz() abort
     call timer_stop(s:bounds_timer)
     let s:bounds_timer = -1
   endif
+endfunction
+
+function! s:EnsureVimWindowId() abort
+  if empty(s:vim_window_id)
+    call s:GetYabaiWindowId()
+  endif
+  return s:vim_window_id
+endfunction
+
+function! s:RefocusMacVim() abort
+  if !has('mac') || !executable('yabai')
+    return
+  endif
+  let winid = s:EnsureVimWindowId()
+  if empty(winid)
+    return
+  endif
+  call s:LogDebug('[fugue] refocus requesting yabai window ' . winid)
+  let cmd = ['yabai', '-m', 'window', '--focus', winid]
+  if exists('*job_start')
+    try
+      call job_start(cmd, {'detach': 1})
+      return
+    catch
+    endtry
+  endif
+  call system(join(map(copy(cmd), 'shellescape(v:val)'), ' ') . ' >/dev/null 2>&1 &')
+endfunction
+
+function! s:GetYabaiWindowId() abort
+  if !has('mac')
+    call s:LogDebug('[fugue] yabai window id skipped: not macOS')
+    return ''
+  endif
+  if !executable('yabai') || !executable('jq')
+    call s:LogDebug('[fugue] yabai window id skipped: yabai/jq missing')
+    return ''
+  endif
+  let id_cmd = 'yabai -m query --windows --space | jq -rc ''.[] | select(.app=="MacVim") | {id:.id,has_focus:.["has-focus"]}'''
+  try
+    let raw_entries = systemlist(id_cmd)
+  catch
+    call s:LogDebug('[fugue] yabai window id command threw exception')
+    return ''
+  endtry
+  call s:LogDebug('[fugue] yabai id output=' . string(raw_entries) . ' exit=' . v:shell_error)
+  if v:shell_error || empty(raw_entries)
+    return ''
+  endif
+  let winid = ''
+  let focus_state = ''
+  for entry in raw_entries
+    let trimmed = trim(entry)
+    if empty(trimmed)
+      continue
+    endif
+    try
+      let parsed = json_decode(trimmed)
+    catch
+      continue
+    endtry
+    if type(parsed) != v:t_dict || !has_key(parsed, 'id')
+      continue
+    endif
+    let current_id = string(parsed.id)
+    let current_focus = get(parsed, 'has_focus', 0) ? 'true' : 'false'
+    if current_focus ==# 'true'
+      let winid = current_id
+      let focus_state = current_focus
+      break
+    endif
+    if empty(winid)
+      let winid = current_id
+      let focus_state = current_focus
+    endif
+  endfor
+  if empty(winid)
+    return ''
+  endif
+  call s:LogDebug('[fugue] yabai focus=' . focus_state . ' window_id=' . winid)
+  let s:vim_window_id = winid
+  return winid
 endfunction
 
 function! s:TriggerUpdate(timer) abort
