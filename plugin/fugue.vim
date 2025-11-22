@@ -244,6 +244,7 @@ function! s:SetBrozUrl(url) abort
   call s:TriggerUpdate(0)
 endfunction
 
+
 function! s:HideBrozOverlay() abort
   if !s:BrozIsActive()
     call s:LogDebug('⚠️ hide skipped: broz inactive')
@@ -416,11 +417,6 @@ function! FugueApi_FocusOverlayWindow(bufnr, args) abort
 endfunction
 
 function! FugueApi_ReFocusMacVim(bufnr, args) abort
-  if !empty(a:args)
-    call s:LogDebug('[fugue] manual refocus request via ' . string(a:args))
-  else
-    call s:LogDebug('[fugue] automatic refocus request')
-  endif
   call s:RefocusMacVim()
 endfunction
 

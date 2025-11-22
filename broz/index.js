@@ -103,7 +103,7 @@ function createMainWindow(args) {
     backgroundColor: '#00000000',
     transparent: true,
     resizable: false,
-    focusable: false,
+    focusable: true,
   })
 
   main.setHasShadow(false)
@@ -118,7 +118,7 @@ function createMainWindow(args) {
   if (main.setVisibleOnAllWorkspaces)
     main.setVisibleOnAllWorkspaces(false, { visibleOnFullScreen: true })
   if (typeof main.setFocusable === 'function')
-    main.setFocusable(false)
+    main.setFocusable(true)
 
   main.on('resize', () => {
     const [width, height] = main.getSize()
@@ -152,6 +152,8 @@ function createMainWindow(args) {
  * @param {BrowserWindow} win
  */
 function configureWindow(win, args) {
+  let refocusEnabled = true
+  let pointerDown = false
   // injecting a dragable area
   win.webContents.on('dom-ready', () => {
     win.webContents.executeJavaScript(`;(() => {
@@ -184,7 +186,30 @@ document.head.appendChild(rootStyle)
   })
 
   win.webContents.on('before-input-event', (event, input) => {
-    if (input.type === 'mouseDown')
+    if (input.type === 'mouseDown') {
+      pointerDown = true
+      if (refocusEnabled)
+        callVimApi('FugueApi_ReFocusMacVim', ['auto-down'])
+      return
+    }
+    if (input.type === 'mouseUp') {
+      pointerDown = false
+      if (refocusEnabled)
+        callVimApi('FugueApi_ReFocusMacVim', ['auto-up'])
+      return
+    }
+    if (input.type === 'keyDown' && input.key === 'Escape') {
+      if (refocusEnabled) {
+        refocusEnabled = false
+        callVimApi('FugueApi_ReFocusMacVim', ['refocus-disabled'])
+      }
+      else if (input.alt) {
+        refocusEnabled = true
+        callVimApi('FugueApi_ReFocusMacVim', ['refocus-enabled'])
+      }
+      return
+    }
+    if (input.type === 'mouseDown' && refocusEnabled)
       callVimApi('FugueApi_ReFocusMacVim', ['auto-down'])
     if (input.control || input.meta) {
       if (input.key === ']') {
@@ -211,8 +236,11 @@ document.head.appendChild(rootStyle)
   })
 
   win.webContents.on('input-event', (event, input) => {
-    if (input.type === 'mouseUp')
-      callVimApi('FugueApi_ReFocusMacVim', ['auto-up'])
+    if (input.type === 'mouseUp') {
+      pointerDown = false
+      if (refocusEnabled)
+        callVimApi('FugueApi_ReFocusMacVim', ['auto-up'])
+    }
   })
 
 
@@ -220,7 +248,7 @@ document.head.appendChild(rootStyle)
     configureWindow(win, args)
     enforceUnfocusedState(win)
     if (typeof win.setFocusable === 'function')
-      win.setFocusable(false)
+      win.setFocusable(true)
     callVimApi('FugueApi_ReFocusMacVim', [])
   })
 
@@ -331,10 +359,6 @@ function showWindowUnfocused(win) {
   }
   else {
     win.show()
-    if (typeof win.blur === 'function')
-      win.blur()
-    if (typeof win.blurWebView === 'function')
-      win.blurWebView()
   }
 }
 
