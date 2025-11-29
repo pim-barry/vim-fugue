@@ -1,5 +1,6 @@
 command! Browse echo "Hello4"
 command! -bang -nargs=? Fugue call s:OpenFugueCommand(<bang>0, <q-mods>, <q-args>)
+command! DFugue call s:DebugFugueCommand()
 
 augroup fugue
   autocmd!
@@ -16,7 +17,6 @@ augroup fugue
 augroup END
 
 let s:fugue_winid = -1
-let s:titlebar_height = v:null
 let s:macvim_cell_pad_top = 1
 let s:macvim_cell_pad_left = 2
 let s:fullscreen_gutter_top = 39
@@ -25,7 +25,6 @@ let s:broz_job = v:null
 let s:broz_bufnr = -1
 let s:last_payload = {}
 let s:broz_url = 'https://pornhub.com'
-let s:macvim_bounds = v:null
 let s:state_timer = -1
 let s:bounds_timer = -1
 let s:focus_timer = -1
@@ -35,6 +34,7 @@ let s:broz_hidden = 0
 let s:last_winpos = []
 let s:log_path = expand('~/Desktop/log.txt')
 let s:vim_window_id = ''
+let s:initial_geometry_timer = -1
 
 let s:script_dir = fnamemodify(expand('<sfile>:p:h'), ':p')
 let s:broz_path = substitute(fnamemodify(s:script_dir . '/../broz', ':p'), '/$', '', '')
@@ -57,16 +57,9 @@ function! s:OpenFugueOverlay(...) abort
   call s:StopBroz()
   let s:fugue_winid = win_getid()
   let s:broz_hidden = 0
-  call s:GetMacVimBounds()
-  call s:GetTitlebarHeight()
-  let payload = s:GatherGeometry()
-  call s:LogDebug('[fugue] gather payload ' . json_encode(payload))
-  let s:last_payload = payload
+  let s:last_payload = {}
   let cmd = ['broz.js', '--top']
   call s:GetYabaiWindowId()
-  if !empty(payload)
-    call extend(cmd, ['--width', string(payload.widthPx), '--height', string(payload.heightPx), '--x', string(payload.leftPxWin), '--y', string(payload.topPxWin)])
-  endif
   let url = (a:0 && type(a:1) == v:t_string) ? trim(a:1) : ''
   let target_url = empty(url) ? s:broz_url : url
   let s:broz_url = target_url
@@ -92,6 +85,14 @@ function! s:OpenFugueOverlay(...) abort
   endif
   let s:broz_job = term_job
   call s:LogDebug('[fugue] broz job active buffer=' . s:broz_bufnr)
+  let overlay_enabled = get(g:, 'fugue_enable_overlay', 0)
+  let fullscreen_mode = exists('g:macvim_fullscreen') && get(g:, 'macvim_fullscreen', 0)
+  let simple_mode = !overlay_enabled || fullscreen_mode || get(g:, 'fugue_force_simple_launch', 0)
+  if simple_mode
+    call s:LogDebug('[fugue] simple launch: skipping overlay setup and leaving Broz visible')
+    return
+  endif
+  call s:HideBrozOverlay()
   if exists('*term_setapi')
     call term_setapi(s:broz_bufnr, 'FugueApi_')
   endif
@@ -99,6 +100,7 @@ function! s:OpenFugueOverlay(...) abort
     call s:TriggerUpdate(0)
     call s:StartStateWatcher()
   endif
+  call s:InitializeBrozGeometry()
 endfunction
 
 function! s:OpenFugueCommand(use_current, mods, url) abort
@@ -169,6 +171,65 @@ function! s:GatherGeometry() abort
   return payload
 endfunction
 
+function! s:InitializeBrozGeometry() abort
+  call s:CancelInitialGeometryTimer()
+  if !s:BrozIsActive()
+    call s:LogDebug('[fugue] init geometry skipped: broz inactive')
+    return
+  endif
+  let payload = s:GatherGeometry()
+  if empty(payload)
+    call s:LogDebug('[fugue] init geometry payload empty, using fallback')
+    let payload = s:DefaultGeometryPayload()
+  endif
+  let s:last_payload = copy(payload)
+  call s:LogDebug('[fugue] init geometry payload ' . json_encode(payload))
+  call s:SafeResizeBroz(payload)
+  if s:broz_hidden
+    call s:ShowBrozOverlay()
+  endif
+endfunction
+
+function! s:DefaultGeometryPayload() abort
+  let cell_px = getcellpixels()
+  let cell_w = empty(cell_px) ? 8 : s:ToInt(cell_px[0])
+  let cell_h = empty(cell_px) ? 15 : s:ToInt(cell_px[1])
+  let width_cells = &columns
+  let height_cells = &lines - 2
+  let payload = {
+        \ 'winid': win_getid(),
+        \ 'topCell': 1,
+        \ 'leftCell': 1,
+        \ 'widthCells': width_cells,
+        \ 'heightCells': height_cells,
+        \ 'cellWidthPx': cell_w,
+        \ 'cellHeightPx': cell_h,
+        \ }
+  let payload.widthPx = s:ToInt(width_cells * cell_w)
+  let payload.heightPx = s:ToInt(height_cells * cell_h)
+  let payload.titlebarHeightPx = 0
+  let payload.cellPadPx = {'top': s:fullscreen_gutter_top, 'left': s:fullscreen_gutter_left}
+  let payload.topPxWin = s:fullscreen_gutter_top
+  let payload.leftPxWin = s:fullscreen_gutter_left
+  return payload
+endfunction
+
+function! s:ScheduleInitialGeometryRetry() abort
+  if !exists('*timer_start')
+    call s:InitializeBrozGeometry()
+    return
+  endif
+  call s:CancelInitialGeometryTimer()
+  let s:initial_geometry_timer = timer_start(200, {-> s:InitializeBrozGeometry()})
+endfunction
+
+function! s:CancelInitialGeometryTimer() abort
+  if s:initial_geometry_timer != -1
+    call timer_stop(s:initial_geometry_timer)
+    let s:initial_geometry_timer = -1
+  endif
+endfunction
+
 function! s:SendToBroz(payload) abort
   if !has('channel')
     call s:LogDebug('[fugue] channels not supported in this Vim build')
@@ -213,6 +274,29 @@ function! s:SendToBroz(payload) abort
   let message = json_encode(request) . "\n"
   call s:LogDebug('[fugue] send ' . message)
   call ch_sendraw(term_channel, message)
+endfunction
+
+function! s:PayloadHasGeometry(payload) abort
+  return has_key(a:payload, 'widthPx') && has_key(a:payload, 'heightPx')
+        \ && has_key(a:payload, 'topPxWin') && has_key(a:payload, 'leftPxWin')
+endfunction
+
+function! s:SafeResizeBroz(payload) abort
+  if empty(a:payload)
+    return
+  endif
+  if !s:PayloadHasGeometry(a:payload)
+    call s:SendToBroz(a:payload)
+    return
+  endif
+  let was_hidden = s:broz_hidden
+  if !was_hidden
+    call s:SendToBroz({'action': 'hide'})
+  endif
+  call s:SendToBroz(a:payload)
+  if !was_hidden
+    call s:SendToBroz({'action': 'show_inactive'})
+  endif
 endfunction
 
 function! s:BrozIsActive() abort
@@ -401,9 +485,7 @@ endfunction
 
 function! s:RefreshMacVimBounds() abort
   let s:bounds_timer = -1
-  let s:macvim_bounds = {}
   let s:last_winpos = []
-  call s:GetMacVimBounds()
   call s:TriggerUpdate(0)
 endfunction
 
@@ -431,6 +513,18 @@ function! s:StopBroz() abort
       " Ignore invalid job handle when stopping
     endtry
   endif
+  call s:ClearBrozState()
+  if s:focus_timer != -1
+    call timer_stop(s:focus_timer)
+    let s:focus_timer = -1
+  endif
+  if s:bounds_timer != -1
+    call timer_stop(s:bounds_timer)
+    let s:bounds_timer = -1
+  endif
+endfunction
+
+function! s:ClearBrozState() abort
   let s:broz_job = v:null
   let s:broz_bufnr = -1
   let s:fugue_winid = -1
@@ -440,14 +534,14 @@ function! s:StopBroz() abort
   let s:broz_hidden = 0
   let s:last_winpos = []
   let s:vim_window_id = ''
-  if s:focus_timer != -1
-    call timer_stop(s:focus_timer)
-    let s:focus_timer = -1
+  if s:initial_geometry_timer != -1
+    call timer_stop(s:initial_geometry_timer)
   endif
-  if s:bounds_timer != -1
-    call timer_stop(s:bounds_timer)
-    let s:bounds_timer = -1
+  let s:initial_geometry_timer = -1
+  if s:show_timer != -1
+    call timer_stop(s:show_timer)
   endif
+  let s:show_timer = -1
 endfunction
 
 function! s:EnsureVimWindowId() abort
@@ -561,13 +655,12 @@ function! s:TriggerUpdate(timer) abort
   endif
   let s:last_payload = copy(payload)
   call s:LogDebug('[fugue] updating broz with ' . json_encode(payload))
-  call s:SendToBroz(payload)
+  call s:SafeResizeBroz(payload)
 endfunction
 
 function! s:OnBrozExit(job, status) abort
-  let s:broz_job = v:null
-  let s:broz_bufnr = -1
-  let s:fugue_winid = -1
+  call s:LogDebug('[fugue] broz job exited status=' . a:status)
+  call s:ClearBrozState()
 endfunction
 
 
@@ -577,120 +670,6 @@ function! s:LogDebug(msg) abort
   endif
   let entry = printf('%s %s', strftime('%Y-%m-%d %H:%M:%S'), a:msg)
   call writefile([entry], s:log_path, 'a')
-endfunction
-function! s:GetMacVimBounds() abort
-  if type(s:macvim_bounds) == v:t_dict && !empty(s:macvim_bounds)
-    return s:macvim_bounds
-  endif
-  if !has('mac')
-    let s:macvim_bounds = {}
-    return {}
-  endif
-  let server = v:servername
-  if empty(server)
-    let s:macvim_bounds = {}
-    return {}
-  endif
-  let script = [
-        \ 'const serverName = ' . json_encode(server) . ';',
-        \ 'const se = Application("System Events");',
-        \ 'const mvim = se.processes.byName("MacVim");',
-        \ 'if (!mvim.exists()) {',
-        \ '  console.log("MacVim process not found");',
-        \ '} else {',
-        \ '  const wins = mvim.windows().filter(w => w.name().includes(serverName));',
-        \ '  if (wins.length === 0) {',
-        \ '    console.log("No window found for " + serverName);',
-        \ '  } else {',
-        \ '    const win = wins[0];',
-        \ '    const [x, y] = win.position();',
-        \ '    const [w, h] = win.size();',
-        \ '    console.log(`{${x}, ${y}} {${w}, ${h}}`);',
-        \ '  }',
-        \ '}',
-        \ ]
-  let result = system('osascript -l JavaScript', join(script, "\n"))
-  if v:shell_error != 0
-    let s:macvim_bounds = {}
-    return {}
-  endif
-  let match = matchlist(result, '{\s*\(\d\+\)\s*,\s*\(\d\+\)\s*}\s*{\s*\(\d\+\)\s*,\s*\(\d\+\)\s*}')
-  if empty(match)
-    let s:macvim_bounds = {}
-    return {}
-  endif
-  let s:macvim_bounds = {
-        \ 'x': str2nr(match[1]),
-        \ 'y': str2nr(match[2]),
-        \ 'width': str2nr(match[3]),
-        \ 'height': str2nr(match[4]),
-        \ }
-  return s:macvim_bounds
-endfunction
-
-function! s:GetTitlebarHeight() abort
-  if type(s:titlebar_height) == type(0) && s:titlebar_height >= 0
-    return s:titlebar_height
-  endif
-  if !has('mac')
-    let s:titlebar_height = 0
-    return 0
-  endif
-  let server = v:servername
-  if empty(server)
-    let s:titlebar_height = 0
-    return 0
-  endif
-  let script = [
-        \ 'const serverName = ' . json_encode(server) . ';',
-        \ 'const se = Application("System Events");',
-        \ 'const mvim = se.processes.byName("MacVim");',
-        \ 'if (!mvim.exists()) {',
-        \ '  console.log(JSON.stringify({ titlebarHeight: 0, error: "MacVim not found" }));',
-        \ '  return;',
-        \ '}',
-        \ 'const win = mvim.windows().find(w => w.name().includes(serverName));',
-        \ 'if (!win) {',
-        \ '  console.log(JSON.stringify({ titlebarHeight: 0, error: "No window" }));',
-        \ '  return;',
-        \ '}',
-        \ 'const [wx, wy] = win.position();',
-        \ 'const buttons = typeof win.buttons === "function" ? win.buttons() : [];',
-        \ 'if (!buttons.length) {',
-        \ '  console.log(JSON.stringify({ titlebarHeight: 0 }));',
-        \ '  return;',
-        \ '}',
-        \ 'const btn = buttons[0];',
-        \ 'const btnPos = typeof btn.position === "function" ? btn.position() : [wx, wy];',
-        \ 'const btnSize = typeof btn.size === "function" ? btn.size() : [0, 0];',
-        \ 'const by = btnPos.length > 1 ? btnPos[1] : wy;',
-        \ 'const bh = btnSize.length > 1 ? btnSize[1] : 0;',
-        \ 'const padding = by - wy;',
-        \ 'const titlebarHeight = padding * 2 + bh;',
-        \ 'console.log(JSON.stringify({ titlebarHeight }));',
-        \ ]
-  let result = system('osascript -l JavaScript', join(script, "\n"))
-  if v:shell_error != 0
-    let s:titlebar_height = 0
-    return 0
-  endif
-  let trimmed = trim(result)
-  if empty(trimmed)
-    let s:titlebar_height = 0
-    return 0
-  endif
-  try
-    let data = json_decode(trimmed)
-  catch
-    let s:titlebar_height = 0
-    return 0
-  endtry
-  if type(data) != type({}) || !has_key(data, 'titlebarHeight')
-    let s:titlebar_height = 0
-    return 0
-  endif
-  let s:titlebar_height = s:ToInt(data.titlebarHeight)
-  return s:titlebar_height
 endfunction
 
 function! s:ToInt(value) abort
@@ -785,9 +764,6 @@ function! s:PayloadEquals(left, right) abort
   return 1
 endfunction
 
-if has('mac') && !empty(v:servername)
-  call s:GetMacVimBounds()
-endif
 function! FugueApi_SendKeys(bufnr, args) abort
   if s:fugue_winid == -1 || !win_id2win(s:fugue_winid)
     return
@@ -802,4 +778,20 @@ function! FugueApi_SendKeys(bufnr, args) abort
     endif
     call feedkeys(key, 'n')
   endfor
+endfunction
+function! s:DebugFugueCommand() abort
+  if !has('terminal') || !exists('*term_start')
+    echoerr '[fugue] :terminal not supported'
+    return
+  endif
+  let cmd = ['broz.js', '--top']
+  call s:GetYabaiWindowId()
+  let target_url = s:broz_url
+  call add(cmd, target_url)
+  let opts = {
+        \ 'curwin': 1,
+        \ 'term_kill': 'term',
+        \ 'term_name': 'Fugue Debug Broz',
+        \ }
+  call term_start(cmd, opts)
 endfunction
